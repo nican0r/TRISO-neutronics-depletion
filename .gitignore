@@ -27,3 +27,6 @@ source.*.h5
 
 # OS
 .DS_Store
+
+# Simulation Outputs
+output
