@@ -53,7 +53,7 @@ The graphite matrix carries the `c_Graphite` S(α,β) thermal scattering kernel 
 - **IPyC/OPyC density 1.87 g/cm³** — AGR-1 target range 1.85–1.90 g/cm³, midpoint chosen; INL/EXT-10-19476.
 - **SiC density 3.20 g/cm³** — AGR-1 target 3.19 g/cm³ rounded to 2 decimal places; INL/EXT-10-19476 Table 3.
 - **Graphite matrix density 1.75 g/cm³** — AGR-1 compact matrix target per INL/EXT-10-19476 Table 5.
-- **Temperature 900 K** — Single-temperature Stage 0 approximation; HTGR full-power range is 900–1200 K; 900 K is the conservative cool-side estimate. Revisit with multi-temperature model in a later stage.
+- **Temperature 293.6 K** — Matches the single temperature point in the NNDC HDF5 library downloaded by `download_data.sh`. The HTGR operating range is 900–1200 K, but Doppler broadening at those temperatures requires a multi-temperature library (~7 GB). Using 293.6 K keeps the model consistent with the available data; k-eff will be optimistic by ~1–3% compared to a 900 K calculation. Revisit when upgrading the cross-section library.
 - **No S(α,β) on PyC layers** — PyC is turbostratic carbon, not crystalline graphite; applying `c_Graphite` would be physically incorrect. Effect is small (thermal scattering in thin PyC layers), marked TODO for Stage 1 review.
 - **Enrichment keyword approximation** — `add_element('U', enrichment=19.75)` uses a fixed U-234/U-235 mass ratio of 0.008, valid for centrifuge-enriched product; U-234 ≈ 0.18 wt% of total U, U-236 = 0. Error on k-eff is negligible for Stage 0.
 - **`depletable` flag not set** — Left for the depletion step; materials are pure neutronics objects at this stage.
@@ -84,21 +84,67 @@ The graphite matrix carries the `c_Graphite` S(α,β) thermal scattering kernel 
 
 ---
 
+## Stage 3 — Run & Tallies (`step-3`)
+
+### What was implemented
+
+- `src/triso/run.py` — `build_model()` assembling the complete `openmc.Model` (geometry + materials + settings + tallies); `run_model()` executing the calculation and returning a results dict; `__main__` block for direct invocation.
+- Four tallies:
+  - `flux by material` — energy-integrated flux aggregated per layer type (kernel, buffer, IPyC, SiC, OPyC, matrix)
+  - `flux by material 3-group` — same, binned into thermal / epithermal / fast groups to reveal spectral shape per region
+  - `kernel reaction rates` — fission and absorption rates in the UCO kernel
+  - `heating by material` — `heating-local` energy deposition score across all six material layers
+
+### How it works
+
+`build_model()` calls `build_materials()` and `build_geometry()`, then assembles `openmc.Settings` for eigenvalue mode (k-inf) and attaches four tallies before returning an `openmc.Model`. Tallies use `MaterialFilter` rather than `CellFilter` so that scores are aggregated across *all* repeated TRISO particle instances in the packed lattice — a `CellFilter` on a nominal cell ID would only score one particle's contribution. `run_model()` invokes `model.run()`, opens the resulting statepoint, and returns a dict of k-eff ± σ plus four pandas DataFrames for downstream analysis.
+
+### Design decisions
+
+- **200 batches / 50 inactive / 5 000 particles per batch** — ~750 000 active histories; expected σ(k-eff) ≈ 10–20 pcm and tally relative errors ≲ 5% on the kernel and matrix. Stage 0 target: fast enough to run on a laptop in ≈ 5–15 min while giving statistically meaningful tally output.
+- **MaterialFilter over CellFilter** — TRISO lattice has hundreds of repeated cell instances; MaterialFilter is the correct aggregate for per-layer-type quantities. DistribcellFilter (instance-by-instance) produces very large output and is deferred to a later stage.
+- **3-group energy boundaries: 0 / 0.625 eV / 100 keV / 20 MeV** — IAEA standard thermal cutoff (0.625 eV) and fast threshold (100 keV). A finer group structure is deferred to the MGXS generation stage.
+- **`heating-local` score** — reports kinetic energy deposited locally by charged particles and recoil nuclei; valid without `photon_transport = True`. `heating` (which includes photon transport) is deferred to a stage that enables coupled neutron-photon transport.
+- **Box initial source** — `openmc.stats.Box` spanning the compact cylinder bounding box; adequate starting distribution for a reflective-boundary k-inf problem where the fission source converges quickly.
+- **TODO**: `heating-local` returns zero with the single-temperature NNDC library because kerma coefficients are absent from that library. Will produce non-zero results when upgraded to a multi-temperature library. Enable `photon_transport` and switch to `heating` for a more complete energy deposition picture at the same time.
+
+---
+
 ## Quickstart
 
-```bash
-# 1. Install micromamba (macOS, Homebrew)
-brew install micromamba
+### First-time setup (once per machine)
 
-# 2. Create the conda environment
+```bash
+# Install micromamba and direnv
+brew install micromamba direnv
+
+# Hook direnv into your shell
+echo 'eval "$(direnv hook zsh)"' >> ~/.zshrc   # or ~/.bashrc for bash
+source ~/.zshrc
+
+# Register the mamba envs directory so 'triso-env' resolves by name
+micromamba config append envs_dirs ~/mamba/envs
+
+# Create the conda environment
 bash scripts/setup_env.sh
 
-# 3. Download nuclear data (~1.4 GB)
+# Activate the environment and install the package in editable mode
+# (editable mode means changes to src/triso/ take effect without reinstalling)
+eval "$(micromamba shell hook --shell zsh)"
+micromamba activate triso-env
+pip install -e .
+
+# Download nuclear data (~1.4 GB)
 bash scripts/download_data.sh
 
-# 4. Activate and validate
-eval "$(micromamba shell hook --shell bash)"
+# Trust the .envrc so direnv sets OPENMC_CROSS_SECTIONS automatically on cd
+direnv allow
+```
+
+### Every run
+
+```bash
+eval "$(micromamba shell hook --shell zsh)"
 micromamba activate triso-env
-export OPENMC_CROSS_SECTIONS="$(pwd)/data/nndc_hdf5/cross_sections.xml"
-python scripts/validate_env.py
+python -m triso.run
 ```

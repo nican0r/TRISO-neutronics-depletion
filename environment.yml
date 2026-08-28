@@ -1,0 +1,16 @@
+name: triso-env
+# OpenMC has no native arm64 conda package; osx-64 runs via Rosetta 2 on Apple Silicon.
+# Create with: MAMBA_ROOT_PREFIX=~/mamba micromamba env create --platform osx-64 --file environment.yml
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - openmc=0.15.3
+  - numpy>=1.26
+  - scipy>=1.13
+  - matplotlib>=3.9
+  - pandas>=2.2
+  - h5py>=3.11
+  - uncertainties>=3.1
+  - lxml>=5.2
+  - pip

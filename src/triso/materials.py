@@ -7,11 +7,10 @@ All compositions and densities from AGR-1 fuel specifications:
 
 import openmc
 
-# Single uniform temperature for Stage 0 criticality runs.
-# HTGR operating temperatures span 900–1200 K; 900 K is a conservative
-# cool-side estimate that keeps Doppler broadening physically reasonable
-# without requiring a multi-temperature model.
-_T_K = 900.0
+# 293.6 K matches the single temperature point in the NNDC HDF5 library
+# downloaded by download_data.sh. Using any other value requires a
+# multi-temperature library. Revisit when upgrading the cross-section data.
+_T_K = 293.6
 
 
 def build_materials() -> dict[str, openmc.Material]:

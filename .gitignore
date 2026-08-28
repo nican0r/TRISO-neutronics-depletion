@@ -1,0 +1,29 @@
+plan/
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+triso-example.ipynb
+
+# Nuclear data (large binary files, not committed to repo)
+data/
+
+# OpenMC simulation outputs
+*.h5
+statepoint.*.h5
+summary.h5
+tallies.out
+particle_restart.*.h5
+source.*.h5
+
+# OS
+.DS_Store
