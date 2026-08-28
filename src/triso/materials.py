@@ -7,10 +7,11 @@ All compositions and densities from AGR-1 fuel specifications:
 
 import openmc
 
-# 293.6 K matches the single temperature point in the NNDC HDF5 library
-# downloaded by download_data.sh. Using any other value requires a
-# multi-temperature library. Revisit when upgrading the cross-section data.
-_T_K = 293.6
+# 1200 K: upper HTGR fuel design temperature. Both neutron XS (900K and 1200K
+# available in ENDF/B-VIII.0) and c_Graphite S(α,β) (1200K only — the thermal
+# scattering evaluation does not include a 900K point) are consistent at 1200K.
+# Using 900K would silently round c_Graphite thermal scattering up to 1200K anyway.
+_T_K = 1200.0
 
 
 def build_materials() -> dict[str, openmc.Material]:

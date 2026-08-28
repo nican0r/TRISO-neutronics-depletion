@@ -11,7 +11,9 @@ OpenMC-based neutronics and depletion model for TRISO particle fuel. Built as a 
 - `environment.yml` — micromamba/conda environment spec pinning OpenMC 0.15.3 and all Python dependencies
 - `pyproject.toml` — project metadata and Python dependency list for the `src/triso` package
 - `scripts/setup_env.sh` — one-shot script to create the conda environment
-- `scripts/download_data.sh` — downloads the NNDC HDF5 cross-section library (~1.4 GB) from ANL Box
+- `scripts/download_data.sh` — downloads the NNDC ENDF/B-VII.1 HDF5 library (~1.4 GB, single temperature 293.6 K, no kerma)
+- `scripts/download_endfb80.sh` — downloads the ENDF/B-VIII.0 HDF5 library (multi-temperature, with kerma), then trims to 900 K + 1200 K only
+- `scripts/trim_temperatures.py` — rewrites OpenMC HDF5 nuclide files keeping only specified temperature points; called automatically by `download_endfb80.sh`
 - `scripts/validate_env.py` — validates OpenMC import and cross-section library accessibility
 - `.envrc` — sets `OPENMC_CROSS_SECTIONS` to the local `data/` path (direnv-compatible)
 - `src/triso/__init__.py` — empty package root; model modules added in later steps
@@ -25,8 +27,9 @@ OpenMC is installed via micromamba from the conda-forge channel. Because there i
 
 - **OpenMC 0.15.3, not 0.16.0** — 0.16.0 released August 2026 but has not yet landed on conda-forge; 0.15.3 is the latest conda-packaged version and is the same used in TRISO literature.
 - **osx-64 platform (Rosetta 2)** — no arm64 binary exists on conda-forge; Rosetta is transparent and has no correctional impact on results.
-- **NNDC HDF5 library (ENDF/B-VII.1)** — sourced from OpenMC's own CI download script (`tools/ci/download-xs.sh`); this is the most tested library for OpenMC.
-- **`data/` gitignored** — 966 HDF5 files total several GB; `download_data.sh` is the authoritative source of truth for reproducing the data directory.
+- **ENDF/B-VIII.0 is the active library** (`scripts/download_endfb80.sh`) — includes kerma coefficients (required for `heating-local` tally) and pre-tabulated cross sections at 900 K and 1200 K (HTGR operating range). The NNDC ENDF/B-VII.1 library (`download_data.sh`) is retained for reference but is no longer the default; it has no kerma and only 293.6 K.
+- **Trimmed to 900 K + 1200 K** — the full ENDF/B-VIII.0 distribution ships with six temperatures (250 K, 293.6 K, 600 K, 900 K, 1200 K, 2500 K); `trim_temperatures.py` rewrites each HDF5 file to drop the four unused points, reducing the library from ~7–10 GB to roughly 2–3 GB. The `0K` windowed-multipole groups are always preserved.
+- **`data/` gitignored** — all HDF5 libraries total several GB; the download scripts are the authoritative source of truth for reproducing the data directory.
 - **micromamba over full conda/miniforge** — single Homebrew binary, no PATH mutation needed; avoids modifying the user's shell init files.
 - **TODO (Stage 1+)**: Consider upgrading to ENDF/B-VIII.0 when it becomes straightforwardly available; 235U cross-sections differ by <1% in thermal region but resonance integrals may shift.
 
@@ -53,7 +56,7 @@ The graphite matrix carries the `c_Graphite` S(α,β) thermal scattering kernel 
 - **IPyC/OPyC density 1.87 g/cm³** — AGR-1 target range 1.85–1.90 g/cm³, midpoint chosen; INL/EXT-10-19476.
 - **SiC density 3.20 g/cm³** — AGR-1 target 3.19 g/cm³ rounded to 2 decimal places; INL/EXT-10-19476 Table 3.
 - **Graphite matrix density 1.75 g/cm³** — AGR-1 compact matrix target per INL/EXT-10-19476 Table 5.
-- **Temperature 293.6 K** — Matches the single temperature point in the NNDC HDF5 library downloaded by `download_data.sh`. The HTGR operating range is 900–1200 K, but Doppler broadening at those temperatures requires a multi-temperature library (~7 GB). Using 293.6 K keeps the model consistent with the available data; k-eff will be optimistic by ~1–3% compared to a 900 K calculation. Revisit when upgrading the cross-section library.
+- **Temperature 1200 K** — Upper HTGR fuel design temperature. The ENDF/B-VIII.0 neutron XS files include both 900 K and 1200 K, but the c_Graphite S(α,β) thermal scattering evaluation only provides a 1200 K table (its temperature grid runs 296 K, 400 K, 500 K, 600 K, 700 K, 800 K, 1000 K, 1200 K — no 900 K point). Running at 900 K would have OpenMC silently round the graphite thermal scattering up to 1200 K anyway, so 1200 K is the self-consistent choice. The 900 K neutron XS tables remain in the library for future use.
 - **No S(α,β) on PyC layers** — PyC is turbostratic carbon, not crystalline graphite; applying `c_Graphite` would be physically incorrect. Effect is small (thermal scattering in thin PyC layers), marked TODO for Stage 1 review.
 - **Enrichment keyword approximation** — `add_element('U', enrichment=19.75)` uses a fixed U-234/U-235 mass ratio of 0.008, valid for centrifuge-enriched product; U-234 ≈ 0.18 wt% of total U, U-236 = 0. Error on k-eff is negligible for Stage 0.
 - **`depletable` flag not set** — Left for the depletion step; materials are pure neutronics objects at this stage.
@@ -110,6 +113,42 @@ The graphite matrix carries the `c_Graphite` S(α,β) thermal scattering kernel 
 
 ---
 
+## Stage 4 — Validation / sanity checks (`step-4`)
+
+### What was implemented
+
+- `scripts/validate_physics.py` — standalone validation script with three checks: k-eff range, self-shielding flux depression, and energy deposition proxy.
+- `--statepoint PATH` argument to load an existing statepoint HDF5 (bypasses re-running the simulation).
+- `--output-dir DIR` argument (default: `output/`); two PNG plots saved there: `flux_thermal_by_material.png` and `flux_3group_by_material.png`.
+- `_vol_fractions()` helper computing analytical volume fractions for each TRISO layer from the geometry constants in `geometry.py`.
+- `_mat_id_map()` / `_patch_mat_labels()` helpers: OpenMC stores `MaterialFilter` bins as integer IDs in the statepoint HDF5; these helpers read `summary.h5` and restore the human-readable material names defined in `materials.py`.
+
+### How it works
+
+The script loads the simulation statepoint (or re-runs the model if none is given), then performs three independent checks. **k-eff** is compared against an expected window for a compact-only, all-reflective HALEU geometry. **Self-shielding** is evaluated by dividing the `MaterialFilter` flux tally — which is volume-integrated — by the analytical volume fraction of each layer, converting to flux density (neutrons / cm² · s per unit volume) so that a meaningful cross-region comparison is possible. The raw flux ratios closely match the geometry volume ratios and are dominated by that geometry effect; only the volume-normalized ratio reveals the actual few-percent spatial self-shielding signature. **Energy deposition** uses the fission reaction rate in the kernel as a proxy because `heating-local` returns zero with the NNDC HDF5 library (kerma coefficients absent; see existing TODO). All results are printed to stdout; plots are saved as PNG files to `output/`.
+
+### Results (Stage 0 run)
+
+| Check | Result | Notes |
+|---|---|---|
+| k-eff | **1.2117 ± 0.0010** — PASS | Expected 1.05–1.40 for compact-only geometry |
+| Thermal flux density kernel/matrix | **0.984** — PASS | 1.6% depression; small but real |
+| Epithermal flux density kernel/matrix | **0.997** — PASS | 0.3% depression in epithermal |
+| Fast flux density kernel/matrix | **1.009** — INFO | Elevated: fission neutrons born in kernel |
+| Fission rate in kernel | **4.95×10⁻¹** — PASS | Non-zero; energy release confirmed localised |
+
+### Design decisions
+
+- **k-eff expected range 1.05–1.40, not 1.35–1.65** — the geometry is compact-only with no external graphite moderator blocks; the only thermalization comes from the graphite matrix inside the compact (~70 vol%). A full HTGR fuel element (graphite sleeve + compact) would thermalize more effectively and give a higher k-inf. The compact-only k-inf of 1.21 is consistent with published TRISO compact benchmark calculations.
+- **Volume normalization for flux density** — `MaterialFilter` tallies are volume-integrated (sum of track lengths per material type), so a raw kernel/matrix ratio of ~0.038 is dominated by the volume ratio (kernel 2.71%, matrix 70%). Dividing by volume fraction from `_vol_fractions()` gives the physically meaningful flux density. Volume fractions are derived analytically from the AGR-1 particle radii and packing fraction in `geometry.py`.
+- **Fast group excluded from self-shielding PASS/FAIL** — the kernel is a net source of fast fission neutrons; fast flux density > matrix is physically correct, not a failure.
+- **Dominant self-shielding mechanism is resonance, not spatial** — at r_kernel = 0.0175 cm, the particle radius is ~100× smaller than the thermal neutron mean free path in graphite (~2 cm). Spatial flux gradients within the particle are therefore weak (<2%). The primary self-shielding effect is resonance self-shielding (Dancoff factor reduction of the effective U-238 resonance integral), which manifests as an increased effective multiplication factor compared to a homogenised geometry — not as a large spatial flux depression visible in these tallies.
+- **Energy deposition via fission-rate proxy** — `heating-local` returns zero with the NNDC HDF5 library (kerma coefficients absent). The fission rate in the kernel (f/a = 0.499) confirms energy is released in the fuel kernel. The lower-than-pure-U235 fission fraction (pure 235 thermal: ~0.85) reflects U-238 resonance capture in the HALEU kernel. Proper energy deposition accounting requires a multi-temperature library with kerma; marked as an existing TODO.
+- **Material name mapping from `summary.h5`** — OpenMC writes integer material IDs in the statepoint HDF5 even when the statepoint is linked with a summary. `_mat_id_map()` reads the summary's material list to translate `mat_N` labels back to the names defined in `materials.py` (`'UCO kernel'`, `'graphite matrix'`, etc.).
+- **TODO (Stage 1+)**: Add a graphite fuel-rod sleeve to the geometry to better represent the real HTGR moderation ratio; re-run validation to see how k-inf shifts. Enable `photon_transport=True` and upgrade to a multi-temperature library to validate `heating-local` energy deposition.
+
+---
+
 ## Quickstart
 
 ### First-time setup (once per machine)
@@ -134,8 +173,9 @@ eval "$(micromamba shell hook --shell zsh)"
 micromamba activate triso-env
 pip install -e .
 
-# Download nuclear data (~1.4 GB)
-bash scripts/download_data.sh
+# Download ENDF/B-VIII.0 nuclear data (trimmed to 900 K + 1200 K, ~2–3 GB after trim)
+# This replaces the older NNDC library; allow 20–60 min for the download.
+bash scripts/download_endfb80.sh
 
 # Trust the .envrc so direnv sets OPENMC_CROSS_SECTIONS automatically on cd
 direnv allow
