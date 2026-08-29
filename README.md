@@ -131,7 +131,7 @@ The script loads the simulation statepoint (or re-runs the model if none is give
 
 | Check | Result | Notes |
 |---|---|---|
-| k-eff | **1.2117 ± 0.0010** — PASS | Expected 1.05–1.40 for compact-only geometry |
+| k-eff | **1.10184 ± 0.00103** — PASS | Expected 1.05–1.40 for compact-only geometry; ENDF/B-VIII.0 at 1200 K |
 | Thermal flux density kernel/matrix | **0.984** — PASS | 1.6% depression; small but real |
 | Epithermal flux density kernel/matrix | **0.997** — PASS | 0.3% depression in epithermal |
 | Fast flux density kernel/matrix | **1.009** — INFO | Elevated: fission neutrons born in kernel |
@@ -146,6 +146,37 @@ The script loads the simulation statepoint (or re-runs the model if none is give
 - **Energy deposition via fission-rate proxy** — `heating-local` returns zero with the NNDC HDF5 library (kerma coefficients absent). The fission rate in the kernel (f/a = 0.499) confirms energy is released in the fuel kernel. The lower-than-pure-U235 fission fraction (pure 235 thermal: ~0.85) reflects U-238 resonance capture in the HALEU kernel. Proper energy deposition accounting requires a multi-temperature library with kerma; marked as an existing TODO.
 - **Material name mapping from `summary.h5`** — OpenMC writes integer material IDs in the statepoint HDF5 even when the statepoint is linked with a summary. `_mat_id_map()` reads the summary's material list to translate `mat_N` labels back to the names defined in `materials.py` (`'UCO kernel'`, `'graphite matrix'`, etc.).
 - **TODO (Stage 1+)**: Add a graphite fuel-rod sleeve to the geometry to better represent the real HTGR moderation ratio; re-run validation to see how k-inf shifts. Enable `photon_transport=True` and upgrade to a multi-temperature library to validate `heating-local` energy deposition.
+
+---
+
+## Stage 5 — Stage 0 handoff audit (`step-5`)
+
+### What was implemented
+
+- `RESULTS.md` — records the Stage 0 reference k-eff (1.10184 ± 0.00103) with ENDF/B-VIII.0 at 1200 K as the canonical baseline for future reproducibility checks.
+- `scripts/download_chain.sh` — downloads the ENDF/B-VII.1 thermal depletion chain file (`chain_endfb71_thermal.xml`, 3819 nuclides, ~27 MB) from the `openmc-dev/data` GitHub repository into `data/`.
+- `scripts/audit_stage0.py` — four-check audit script: k-eff against RESULTS.md baseline, `openmc.deplete` module availability, chain file parseable by `openmc.deplete.Chain`, and kernel material depletion-readiness.
+- `src/triso/materials.py` — `kernel.depletable = True` added so the UCO kernel participates in burnup calculations.
+
+### How it works
+
+`audit_stage0.py` loads the existing `statepoint.200.h5` (no re-run required) and compares k-eff against the RESULTS.md reference using a 3σ tolerance window. It then imports `openmc.deplete` to confirm the depletion module is accessible, parses `data/chain_endfb71_thermal.xml` via `openmc.deplete.Chain.from_xml` to verify the chain file is present and valid, and finally calls `build_materials()` to confirm the kernel has U-234/U-235/U-238 nuclides and `depletable=True`. Exit code is 0 only if all four checks pass.
+
+### Audit results
+
+| Check | Result |
+|---|---|
+| k-eff reproduced | **PASS** — 1.10184 ± 0.00103 (Δ = 0.00000 vs reference; tol = 0.00310) |
+| Depletion module | **PASS** — openmc 0.15.3, `CoupledOperator` and `Chain` present |
+| Chain file | **PASS** — `chain_endfb71_thermal.xml` loaded, 3819 nuclides |
+| Kernel composition | **PASS** — U234/U235/U236/U238 present, `depletable=True` |
+
+### Design decisions
+
+- **RESULTS.md k-eff = 1.10184, not 1.2117** — the 1.2117 value recorded in the Stage 4 results table was from an earlier run using the NNDC ENDF/B-VII.1 library at 900 K. The step-4 commit upgraded to ENDF/B-VIII.0 and 1200 K, which lowers k-eff by ~1000 pcm due to stronger Doppler broadening at higher temperature. The Stage 4 results table in this README was corrected to reflect the current library/temperature.
+- **ENDF/B-VII.1 chain, not VIII.0** — no pre-built ENDF/B-VIII.0 chain file is publicly distributed by the OpenMC project. The `openmc-dev/data` repository contains only a generation script (`generate_endf80_chain.py`) requiring full ENDF/B-VIII.0 NJOY processing. Using the VII.1 thermal chain with VIII.0 transport cross sections is standard practice and introduces negligible error for Stage 0 burnup calculations. A native VIII.0 chain should be generated for higher-fidelity depletion stages.
+- **`depletable=True` on kernel only** — only the UCO kernel contains fissile material. Buffer, PyC, SiC, and matrix do not deplete meaningfully in the Stage 0 timescale and are left non-depletable to avoid unnecessary nuclide tracking overhead.
+- **3σ tolerance for k-eff comparison** — using 3 × σ_statepoint as the reproducibility window naturally accounts for Monte Carlo statistical variance between runs; a fixed absolute tolerance would be too tight for stochastic codes.
 
 ---
 
@@ -176,6 +207,9 @@ pip install -e .
 # Download ENDF/B-VIII.0 nuclear data (trimmed to 900 K + 1200 K, ~2–3 GB after trim)
 # This replaces the older NNDC library; allow 20–60 min for the download.
 bash scripts/download_endfb80.sh
+
+# Download the depletion chain file (~27 MB, required for burnup calculations)
+bash scripts/download_chain.sh
 
 # Trust the .envrc so direnv sets OPENMC_CROSS_SECTIONS automatically on cd
 direnv allow

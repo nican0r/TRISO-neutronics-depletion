@@ -27,6 +27,7 @@ def build_materials() -> dict[str, openmc.Material]:
     kernel.add_element('O', 0.4)
     kernel.set_density('g/cm3', 10.5)
     kernel.temperature = _T_K
+    kernel.depletable = True
 
     # Porous carbon buffer: ~50% dense vs. solid PyC.
     # Density 1.0 g/cm³ (AGR-1 target 1.0 g/cm³, INL/EXT-10-19476 Table 3).
