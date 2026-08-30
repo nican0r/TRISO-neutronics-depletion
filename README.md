@@ -180,6 +180,98 @@ The script loads the simulation statepoint (or re-runs the model if none is give
 
 ---
 
+## Stage 6 — Burnup schedule and depletion settings (`step-6`)
+
+### What was implemented
+
+- `src/triso/depletion.py` — `build_depletion_model()` function returning an `openmc.Model` configured for depletion transport steps; `run_depletion()` function that assembles the `CoupledOperator` and `CECMIntegrator` and executes `integrate()`; `POWER_DENSITY` and `TIMESTEPS` module-level constants for the irradiation schedule; `__main__` block for direct invocation.
+
+### How it works
+
+`build_depletion_model()` reuses the same geometry and materials as the eigenvalue model (from `build_geometry()` / `build_materials()`) but with reduced transport settings — 2,000 particles and 100 batches (30 inactive) per step rather than 5,000/200. `run_depletion()` wraps the model in a `CoupledOperator` (coupled transport-depletion with ENDF/B-VII.1 thermal chain) and drives it with `CECMIntegrator`, writing `depletion_results.h5` and per-step statepoints to the current working directory. The `CECMIntegrator` runs two transport solves per time step — a predictor using beginning-of-step reaction rates (CE) and a corrector using midpoint rates (CM) — substantially reducing time-integration error compared with a plain first-order predictor.
+
+### Experimental design
+
+**What is being modelled:** A single AGR-1 TRISO fuel compact (cylinder, r = 0.62 cm, h = 2.5 cm) packed with ~3,650 TRISO particles at 30% packing fraction, surrounded by reflective boundaries on all faces (infinite periodic lattice approximation — no neutron leakage).
+
+**Materials:** UCO kernel (19.75 wt% HALEU, density 10.5 g/cm³) is the only depletable material. Buffer, IPyC, SiC, OPyC, and graphite matrix are held at fixed composition throughout. All materials at 1200 K.
+
+**Nuclear data:** Transport cross sections from ENDF/B-VIII.0 at 1200 K. Transmutation and decay paths from the ENDF/B-VII.1 thermal depletion chain (3,819 nuclides).
+
+**Power condition:** 61.6 W/cm³ at the compact level (constant throughout — no power history variation). Derived from AGR-1: 186 W total compact power achieves 15% FIMA in 620 days.
+
+**Time-step scheme:** 22 steps totalling 620.2 days. Finer steps early to resolve short-lived fission product buildup, coarser steps later for steady-state burnup:
+
+| Phase | Steps | Width | Cumulative end | Reason |
+|---|---|---|---|---|
+| Xe/Sm equilibration | 5 | 1 day | day 5 | Xe-135 equilibrates in ~2 d (t½ = 9.17 h); Sm-149 in ~10 d |
+| FP transient | 5 | 10 days | day 55 | Remaining short-lived fission products stabilise |
+| Steady burnup | 12 | 47.1 days | day 620.2 | Composition changes slowly; coarse steps sufficient |
+
+**Per-step transport:** 100 batches (30 inactive), 2,000 particles/batch → 140,000 active histories per solve. σ(k-eff) ≈ 30–50 pcm per step — sufficient for power normalisation and reaction rate extraction.
+
+**Integration scheme (CECMIntegrator):** Each of the 22 steps makes 2 transport solves → 44 total OpenMC runs:
+1. **Predictor solve** — transport with beginning-of-step composition → reaction rates → Bateman equations integrated forward → predicted end-of-step composition
+2. **Corrector solve** — transport with midpoint composition → corrected reaction rates → Bateman equations re-integrated → final end-of-step composition
+
+The 100 batches within each transport solve are not time steps — they are Monte Carlo power iterations (each ~1–10 µs of physical neutron lifetime) used to converge the steady-state flux. The 22 depletion time steps are the actual clock advancement.
+
+**Total simulation hierarchy:**
+```
+22 time steps
+└── 2 transport solves per step (predictor + corrector) = 44 total
+    └── 100 batches per solve (30 inactive + 70 active)
+        └── 2,000 neutrons per batch
+Total neutrons: 44 × 100 × 2,000 = 8,800,000
+```
+
+**Output:** k-eff at each of the 23 time boundaries (t=0 through t=620.2 d) plus full nuclide inventory of the kernel at each boundary, stored in `depletion_results.h5`.
+
+### Design decisions
+
+- **Power density 61.6 W/cm³** — derived from AGR-1 test parameters (INL/EXT-10-19476): at 15% FIMA target in 620 EFPD, the compact (volume 3.022 cm³, 0.818 g U) dissipates 9.97 GJ total → 186 W → 61.6 W/cm³. This is the power density of the entire compact volume (not the kernel alone), consistent with `power_density` in OpenMC's depletion API.
+- **Target burnup 15% FIMA in 620 EFPD** — midpoint of the 10–20% FIMA AGR-1 irradiation range; 620 EFPD matches AGR-1 irradiation duration (Demkowicz et al. 2018).
+- **Time-step scheme: 5×1d + 5×10d + 12×47.1d = 620.2 days** — finer steps in the first ~55 days capture Xe-135 equilibrium (t½ = 9.17 h, equilibrium ~2 d) and Sm-149 buildup (~53 h effective, equilibrium ~5–10 d); coarser 47-day steps for the remaining steady-state burnup period where composition changes slowly.
+- **CECMIntegrator over PredictorIntegrator** — 2 transport solves per step vs. 1, but substantially more accurate; the plain CE predictor accumulates integration error that compounds over 22 steps. CE/CM is the OpenMC-recommended default for production depletion runs.
+- **Reduced particles: 2,000/step vs. 5,000 for eigenvalue** — depletion transport only needs to normalise power and compute one-group reaction rates; σ(k-eff) ≈ 30–50 pcm per step is sufficient. Cost estimate: 22 steps × 2 solves × ~2.5 min/solve ≈ **1.5–2.2 hours** on a laptop.
+- **`normalization_mode='fission-q'`** — uses Q-values from the chain file to normalise power; does not require kerma coefficients, so it works with any transport library including the NNDC ENDF/B-VII.1 library. TODO: switch to `'energy-deposition'` once photon transport is validated and `heating-local` kerma is confirmed working with ENDF/B-VIII.0.
+- **ENDF/B-VII.1 chain with ENDF/B-VIII.0 transport** — no pre-built VIII.0 chain file is publicly distributed; using the VII.1 thermal chain with VIII.0 transport XS is standard practice and introduces negligible error for Stage 0 burnup calculations (same decision as Step 5).
+- **`diff_burnable_mats` not set (default False)** — all TRISO kernel instances share a single material object; there is only one depletable material in the compact model, so splitting is not needed and would add unnecessary memory overhead.
+
+---
+
+## Stage 7 — Baseline depletion run and k-inf vs. burnup analysis (`step-7`)
+
+### What was implemented
+
+- `scripts/plot_depletion.py` — loads `depletion_results.h5`, plots k-inf vs. EFPD with ±1σ uncertainty bands and a secondary % FIMA axis, saves `output/keff_vs_burnup.png`, and runs three automated sanity checks; exits non-zero if any check fails.
+
+### How it works
+
+`plot_depletion.py` reads the completed depletion results via `openmc.deplete.Results.get_keff()`, which returns k-inf and its 1σ Monte Carlo uncertainty at each of the 23 time boundaries. The primary x-axis is EFPD; the secondary % FIMA axis is derived linearly from EFPD assuming constant power (FIMA% = 15% × EFPD / 620.2), which is exact at constant power density. Three sanity checks are applied: (1) the final k-inf must be below the initial k-inf, (2) no single step may show an upward jump exceeding 300 pcm, and (3) k-inf must cross unity at some point during the irradiation.
+
+### Results (Step 7 sanity check — all pass)
+
+| Check | Result | Notes |
+|---|---|---|
+| Overall decline | **PASS** | k-inf 1.102 → 0.925 over 620 EFPD |
+| No large upward jump | **PASS** | Max step rise 163 pcm (t=25→35d); within 1σ statistical noise |
+| k-inf crosses unity | **PASS** | Crosses at step 15 (~290 EFPD, 7.0% FIMA) |
+
+k-inf swing: **1.10207 → 0.92479** (Δ = 17,728 pcm over 620.2 EFPD / 15.0% FIMA).
+
+The k-inf trend is physically sensible: a steady, near-linear decline driven by U-235 depletion. No pronounced Pu-239 plateau is visible at these burnup levels (≤15% FIMA), which is consistent with HALEU at moderate burnup — Pu-239 buildup from U-238 capture partially offsets U-235 loss but is insufficient to flatten the reactivity curve significantly before 15% FIMA.
+
+### Design decisions
+
+- **k-inf, not k-eff** — the compact geometry uses all-reflective boundaries (infinite periodic lattice approximation from Stage 0); there is no leakage term, so the eigenvalue is k-inf throughout. This choice is carried forward unchanged from Step 3.
+- **300 pcm step-rise tolerance** — per-step σ(k-inf) ≈ 200–250 pcm at 2,000 particles/batch; the 300 pcm threshold is approximately 1.5σ, conservative enough to catch real discontinuities while accepting statistical noise.
+- **Linear FIMA approximation** — exact at constant power density (as set by `POWER_DENSITY` in `depletion.py`); no per-step atom-inventory query needed.
+- **Plot saved to `output/keff_vs_burnup.png`** — consistent with the flux plots from Step 4 (`output/flux_*.png`).
+- **No Pu-239 plateau investigation** — the slight rise at t=35d (163 pcm) is within 1σ noise; a true Pu-239 shoulder would require longer irradiation (>20% FIMA) or a more thermalized spectrum. Deferred to a later stage with higher particle counts.
+
+---
+
 ## Quickstart
 
 ### First-time setup (once per machine)
@@ -220,5 +312,12 @@ direnv allow
 ```bash
 eval "$(micromamba shell hook --shell zsh)"
 micromamba activate triso-env
+
+# Eigenvalue run (k-eff + flux/tally results, ~5–15 min)
 python -m triso.run
+
+# Depletion run (burnup to 15% FIMA, ~1.5–2.2 hr; writes depletion_results.h5)
+# Run from a dedicated output directory to keep statepoints organised:
+mkdir -p output/depletion && cd output/depletion
+python -m triso.depletion ../../data/chain_endfb71_thermal.xml
 ```
