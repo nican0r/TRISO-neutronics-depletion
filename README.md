@@ -272,6 +272,42 @@ The k-inf trend is physically sensible: a steady, near-linear decline driven by 
 
 ---
 
+## Stage 8 — Spectral hardening (`step-8`)
+
+### What was implemented
+
+- `src/triso/depletion.py` — added a `'kernel spectrum'` tally to `build_depletion_model()`: 100 log-spaced energy bins (1 meV → 20 MeV) with a `MaterialFilter` on the kernel, written to every depletion statepoint automatically.
+- `src/triso/depletion.py` — `SPECTRUM_E_BINS` and `SPECTRUM_N_GROUPS` exported as module-level constants so that plotting scripts import the same bin edges used to build the tally.
+- `scripts/plot_spectrum.py` — loads the `'kernel spectrum'` tally from statepoints `openmc_simulation_n0/11/22.h5` (BOL / MOL / EOL), plots the three lethargy-weighted spectra together, and reports thermal fraction and flux-weighted mean energy at each burnup point.
+
+### How it works
+
+Each depletion transport solve writes a statepoint `openmc_simulation_nN.h5`. `Results[N]` maps 1-to-1 to statepoint `nN` (verified by k-eff comparison). `plot_spectrum.py` reads the `'kernel spectrum'` tally directly from the three relevant statepoints — no additional transport runs are needed. The lethargy-normalised flux φ(E)/Δu is plotted on a log-energy axis and peak-normalised for visual comparison of spectral shape.
+
+> **Note:** A depletion re-run is required to populate the spectrum tally. The existing `output/depletion/openmc_simulation_n*.h5` statepoints were generated before the tally was added to `build_depletion_model()` and contain no user tallies.
+
+### Experimental design
+
+**What is being modelled:** Same AGR-1 TRISO compact geometry as Stage 6–7 (all-reflective boundaries, k-inf). No geometry change — only the material composition of the UCO kernel changes at each snapshot.
+
+**Burnup snapshots:** Step 0 (BOL, 0 EFPD, 0% FIMA), step 11 (MOL, 102.1 EFPD, 2.5% FIMA), and step 22 (EOL, 620.2 EFPD, 15% FIMA). Step 11 is the numerical midpoint of the 22-step run; it represents early-to-mid burnup where Pu-239 buildup is just beginning.
+
+**Energy group structure:** 100 log-spaced groups from 1 meV to 20 MeV. Coarser than dedicated multi-group libraries but sufficient to resolve the thermal peak (~0.025 eV), the epithermal resonance region (1 eV – 100 keV), and the fast fission source peak (~1 MeV).
+
+**Per-step transport settings:** Same as the depletion run — 100 batches (30 inactive), 2,000 particles/batch. Sufficient for spectral shape; tally relative errors expected ≲ 5% per group.
+
+**Output:** `output/spectrum_hardening.png` — three overlaid lethargy-weighted flux curves; printed table of thermal fraction and flux-weighted mean energy at each snapshot.
+
+### Design decisions
+
+- **Tally in `build_depletion_model()`, not a separate run** — the depletion already runs transport at each step; adding the spectrum tally costs nothing extra and avoids 3 redundant eigenvalue calculations.
+- **`SPECTRUM_E_BINS` exported from `depletion.py`** — single source of truth for the bin edges; `plot_spectrum.py` imports them so the tally definition and the reader always agree.
+- **Step 11 as MOL** — numerically the midpoint of the 22 steps (102.1 EFPD, 2.5% FIMA). Earlier in the irradiation than the chronological midpoint (310 EFPD); captures the Pu-239 early buildup phase. A later step (e.g. step 15, ~290 EFPD) would show more contrast; can be changed by editing `_SNAPSHOTS` in `plot_spectrum.py`.
+- **100 log-spaced groups** — fine enough to show the thermal peak shape and epithermal resonance structure without requiring a formal multi-group library. Coarser groups (e.g. the 3-group structure from Stage 0) cannot resolve the spectral shape.
+- **Peak-normalisation** — all three spectra are normalised to their own peak so that shape differences are directly visible regardless of absolute flux level.
+
+---
+
 ## Quickstart
 
 ### First-time setup (once per machine)
