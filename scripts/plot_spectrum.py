@@ -54,9 +54,7 @@ def _load_spectrum(
     phi_leth : ndarray (N_GROUPS,)  — lethargy-normalised flux, peak-normalised
     phi_leth_err : ndarray (N_GROUPS,)  — 1σ uncertainty (same scale)
     """
-    summary = sp_path.parent / 'summary.h5'
-    kw = {'summary': str(summary)} if summary.exists() else {}
-    with openmc.StatePoint(str(sp_path), **kw) as sp:
+    with openmc.StatePoint(str(sp_path), autolink=False) as sp:
         try:
             tally = sp.get_tally(name='kernel spectrum')
         except KeyError:
