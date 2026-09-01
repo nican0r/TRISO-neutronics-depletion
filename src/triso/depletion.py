@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import openmc
 import openmc.deplete
 
@@ -35,12 +36,22 @@ from .materials import build_materials
 # compact volume occupied by kernel material.
 # Used to set material.volume for the CoupledOperator (required for converting
 # tally reaction rates to atom counts in the Bateman equations).
-_KERNEL_VOLUME: float = (
+KERNEL_VOLUME: float = (
     math.pi * _COMPACT_R**2 * _COMPACT_H  # compact cylinder volume
     * _PACKING_FRACTION                   # TRISO particle volume fraction
     * (_R_KERNEL / _R_OPYC) ** 3          # kernel fraction within one particle
 )
 # ≈ 0.0820 cm³ at nominal AGR-1 geometry and 30% packing fraction.
+
+# ---------------------------------------------------------------------------
+# Spectrum tally configuration (shared with scripts/plot_spectrum.py)
+# ---------------------------------------------------------------------------
+# 100 log-spaced energy bins from 1 meV to 20 MeV — fine enough to resolve
+# the thermal peak, epithermal resonance region, and fast fission spectrum.
+SPECTRUM_N_GROUPS: int = 100
+SPECTRUM_E_BINS: np.ndarray = np.logspace(
+    np.log10(1e-3), np.log10(2e7), SPECTRUM_N_GROUPS + 1
+)
 
 # ---------------------------------------------------------------------------
 # Depletion constants
@@ -84,7 +95,7 @@ def build_depletion_model() -> openmc.Model:
     # CoupledOperator requires volume on every depletable material to convert
     # volumetric reaction rates (from tallies) into absolute atom counts for
     # the Bateman equations. Analytical estimate; matches the geometry packing.
-    mats['kernel'].volume = _KERNEL_VOLUME
+    mats['kernel'].volume = KERNEL_VOLUME
     geom = build_geometry(mats)
 
     settings = openmc.Settings()
@@ -99,10 +110,20 @@ def build_depletion_model() -> openmc.Model:
         )
     )
 
+    # Fine-group spectrum tally in the kernel — written to every depletion
+    # statepoint so that plot_spectrum.py can read it without re-running transport.
+    t_spec = openmc.Tally(name='kernel spectrum')
+    t_spec.filters = [
+        openmc.MaterialFilter([mats['kernel']]),
+        openmc.EnergyFilter(SPECTRUM_E_BINS),
+    ]
+    t_spec.scores = ['flux']
+
     return openmc.Model(
         geometry=geom,
         materials=openmc.Materials(list(mats.values())),
         settings=settings,
+        tallies=openmc.Tallies([t_spec]),
     )
 
 
