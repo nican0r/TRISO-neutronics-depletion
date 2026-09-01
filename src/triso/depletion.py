@@ -36,7 +36,7 @@ from .materials import build_materials
 # compact volume occupied by kernel material.
 # Used to set material.volume for the CoupledOperator (required for converting
 # tally reaction rates to atom counts in the Bateman equations).
-_KERNEL_VOLUME: float = (
+KERNEL_VOLUME: float = (
     math.pi * _COMPACT_R**2 * _COMPACT_H  # compact cylinder volume
     * _PACKING_FRACTION                   # TRISO particle volume fraction
     * (_R_KERNEL / _R_OPYC) ** 3          # kernel fraction within one particle
@@ -95,7 +95,7 @@ def build_depletion_model() -> openmc.Model:
     # CoupledOperator requires volume on every depletable material to convert
     # volumetric reaction rates (from tallies) into absolute atom counts for
     # the Bateman equations. Analytical estimate; matches the geometry packing.
-    mats['kernel'].volume = _KERNEL_VOLUME
+    mats['kernel'].volume = KERNEL_VOLUME
     geom = build_geometry(mats)
 
     settings = openmc.Settings()
