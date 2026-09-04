@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """Compute the fuel temperature coefficient (Doppler) for TRISO compacts.
 
-Evaluates k-inf at fuel temperatures 900 K, 1050 K, and 1200 K for two burnup
-conditions (BOL: fresh fuel; EOL: 620.2 EFPD / 15% FIMA from depletion_results.h5).
+Evaluates k-inf at fuel temperatures 900 K, 1050 K, 1200 K, and 1873 K for two
+burnup conditions (BOL: fresh fuel; EOL: 620.2 EFPD / 15% FIMA from
+depletion_results.h5).
 
 Temperature treatment
 ---------------------
-The ENDF/B-VIII.0 library (trimmed to 900 K + 1200 K) does NOT include windowed-
-multipole (WMP) data — the `0K` groups in the HDF5 files are base energy grids
-for the tabulated cross sections, not WMP broadening data.  At 900 K and 1200 K
-the exact tabulated values are used.  At 1050 K, OpenMC uses sqrt(T) interpolation
-(Settings.temperature method='interpolation') between the two bounding tabulated
-points.  Extrapolation beyond 1200 K is not supported without additional tabulated
-data (e.g., 2500 K from the full ENDF/B-VIII.0 distribution); obtaining 1500 K
-cross sections would require re-downloading the library and retaining the 2500 K
-point so that 1500 K can be bounded.
+The ENDF/B-VIII.0 library (trimmed to 900 K + 1200 K + 2500 K) does NOT include
+windowed-multipole (WMP) data — the `0K` groups in the HDF5 files are base energy
+grids for the tabulated cross sections, not WMP broadening data.  At 900 K and
+1200 K the exact tabulated values are used.  At 1050 K and 1873 K, OpenMC uses
+sqrt(T) interpolation (Settings.temperature method='interpolation') between the
+two bounding tabulated points (900/1200 K and 1200/2500 K respectively).
 
 What is held fixed
 ------------------
@@ -26,8 +24,10 @@ geometric feedback are not captured here.
 Temperature sweep
 -----------------
   900 K   — below nominal operating temperature (tabulated, exact)
-  1050 K  — intermediate (sqrt(T) interpolation between 900 K and 1200 K)
+  1050 K  — intermediate operating (sqrt(T) interpolation between 900 K and 1200 K)
   1200 K  — nominal operating temperature (tabulated, exact)
+  1873 K  — HTGR accident temperature (~1600 °C; sqrt(T) interpolation between
+             1200 K and 2500 K)
 
 Published comparison
 --------------------
@@ -65,11 +65,11 @@ from triso.depletion import KERNEL_VOLUME
 # Configuration
 # ---------------------------------------------------------------------------
 
-_T_STRUCT: float = 1200.0                       # K — moderator / structural (fixed)
-_FUEL_TEMPS: list[float] = [900.0, 1050.0, 1200.0]  # K — kernel temperature sweep
+_T_STRUCT: float = 1200.0                                    # K — moderator / structural (fixed)
+_FUEL_TEMPS: list[float] = [900.0, 1050.0, 1200.0, 1873.0]  # K — kernel temperature sweep
 
 # Transport settings — same as depletion step (σ(k-eff) ≈ 30–50 pcm per run;
-# at ΔT = 600 K and |FTC| ≈ 3 pcm/K the expected Δk ≈ 1800 pcm, so 30–50 pcm
+# at ΔT = 973 K and |FTC| ≈ 3 pcm/K the expected Δk ≈ 2900 pcm, so 30–50 pcm
 # σ resolves the coefficient to <5% statistical uncertainty).
 _BATCHES: int = 100
 _INACTIVE: int = 30
@@ -222,11 +222,14 @@ def _run_keff(mats: dict, work_dir: Path) -> tuple[float, float]:
 # Plotting helpers
 # ---------------------------------------------------------------------------
 
+_T_ACCIDENT: float = 1873.0   # K — HTGR accident temperature (~1600 °C)
+
+
 def _plot_keff_and_ftc(ftc_store: list[dict], output_dir: Path) -> None:
     """Single-panel figure: k-inf vs T for BOL and EOL."""
     burn_colors = {'BOL': 'steelblue', 'EOL': 'firebrick'}
 
-    fig, ax_k = plt.subplots(1, 1, figsize=(7, 5))
+    fig, ax_k = plt.subplots(1, 1, figsize=(8, 5))
 
     for data in ftc_store:
         T = data['T']
@@ -244,6 +247,17 @@ def _plot_keff_and_ftc(ftc_store: list[dict], output_dir: Path) -> None:
                       zorder=5, label=f'{short}  MC ± 1σ')
         ax_k.plot(T_fit, k_fit, '--', color=color, alpha=0.7,
                   label=f'{short}  FTC = {ftc_pcm:+.2f} pcm/K')
+
+    # Mark the accident temperature boundary
+    ax_k.axvline(_T_ACCIDENT, color='darkorange', linestyle=':', linewidth=1.4,
+                 label=f'Accident temp ({_T_ACCIDENT:.0f} K / ~1600 °C)')
+
+    # Shade the accident regime
+    x_max = max(data['T'][-1] for data in ftc_store) + 50
+    ax_k.axvspan(_T_ACCIDENT, x_max, alpha=0.08, color='orange', zorder=0)
+    ax_k.text(_T_ACCIDENT + 10, 0.02, 'accident\nregime',
+              fontsize=7, color='darkorange', va='bottom',
+              transform=ax_k.get_xaxis_transform())
 
     ax_k.set_xlabel('Fuel temperature (K)')
     ax_k.set_ylabel('k-inf')
@@ -297,7 +311,7 @@ def compute_ftc(dep_h5: Path, output_dir: Path) -> int:
     results: dict[tuple[str, float], tuple[float, float]] = {}
 
     print()
-    print('Running 6 eigenvalue calculations (100 batches / 2000 particles each) ...')
+    print('Running 8 eigenvalue calculations (100 batches / 2000 particles each) ...')
     print()
     for long_label, short, atoms in burnup_configs:
         for T in _FUEL_TEMPS:
@@ -317,7 +331,7 @@ def compute_ftc(dep_h5: Path, output_dir: Path) -> int:
     print('=' * 66)
     print('FUEL TEMPERATURE COEFFICIENT (Doppler) — CHECKPOINT')
     print('Fixed:  buffer, PyC, SiC, graphite matrix at 1200 K')
-    print('Varied: UCO kernel temperature (900 K / 1050 K / 1200 K)')
+    print('Varied: UCO kernel temperature (900 K / 1050 K / 1200 K / 1873 K)')
     print(f'Published HTGR range: [{_FTC_PUB_MIN:.0f}, {_FTC_PUB_MAX:.0f}] pcm/K')
     print(f'  Kuijper et al., NSE 153 (2006); IAEA-TECDOC-978')
     print('=' * 66)
