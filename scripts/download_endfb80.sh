@@ -28,15 +28,22 @@ else
 fi
 
 echo ""
-echo "Trimming to 900 K and 1200 K (removing 250 K, 294 K, 600 K, 2500 K) ..."
-# Resolve Python from the active conda environment, falling back to the system python3.
-PYTHON_BIN="${CONDA_PREFIX:+$CONDA_PREFIX/bin/python}"
-PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python)}"
-"$PYTHON_BIN" "$REPO_ROOT/scripts/trim_temperatures.py" "$LIB_DIR" 900 1200
+echo "Trimming to 900 K, 1200 K, and 2500 K (removing 250 K, 294 K, 600 K) ..."
+# Resolve Python: prefer the triso-env micromamba environment, then CONDA_PREFIX,
+# then fall back to whatever python3 is on PATH.
+TRISO_ENV_PYTHON="/Users/nelsonpereira/mamba/envs/triso-env/bin/python"
+if [[ -x "$TRISO_ENV_PYTHON" ]]; then
+    PYTHON_BIN="$TRISO_ENV_PYTHON"
+elif [[ -n "${CONDA_PREFIX:-}" ]]; then
+    PYTHON_BIN="$CONDA_PREFIX/bin/python"
+else
+    PYTHON_BIN="$(command -v python3 || command -v python)"
+fi
+"$PYTHON_BIN" "$REPO_ROOT/scripts/trim_temperatures.py" "$LIB_DIR" 900 1200 2500
 echo "Trimming complete."
 
 echo ""
-echo "ENDF/B-VIII.0 (900 K + 1200 K) library installed at:"
+echo "ENDF/B-VIII.0 (900 K + 1200 K + 2500 K) library installed at:"
 echo "  $CROSS_SECTIONS_XML"
 echo ""
 echo "Updating .envrc to use the new library ..."

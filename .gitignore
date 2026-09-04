@@ -1,5 +1,6 @@
 plan/
-.claude/
+.claude/settings.local.json
+.claude/commands/
 
 # Python
 __pycache__/
