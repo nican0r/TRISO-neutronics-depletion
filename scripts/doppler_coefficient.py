@@ -262,7 +262,8 @@ def _plot_keff_and_ftc(ftc_store: list[dict], output_dir: Path) -> None:
     ax_k.set_xlabel('Fuel temperature (K)')
     ax_k.set_ylabel('k-inf')
     ax_k.set_title('k-inf vs fuel temperature')
-    ax_k.legend(fontsize=8)
+    ax_k.legend(fontsize=8, loc='upper center', bbox_to_anchor=(0.5, -0.18),
+                ncol=2, frameon=True)
     ax_k.grid(True, alpha=0.3)
 
     fig.suptitle(
@@ -271,6 +272,7 @@ def _plot_keff_and_ftc(ftc_store: list[dict], output_dir: Path) -> None:
         fontsize=11,
     )
     fig.tight_layout()
+    fig.subplots_adjust(bottom=0.28)
     out = output_dir / 'doppler_ftc.png'
     fig.savefig(out, dpi=150, bbox_inches='tight')
     plt.close(fig)
