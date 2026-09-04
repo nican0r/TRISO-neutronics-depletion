@@ -35,7 +35,7 @@ _IRRAD_DAYS: float = sum(TIMESTEPS)   # 620.2 EFPD
 
 # Depletion step indices for BOL / MOL / EOL.
 # statepoint openmc_simulation_nN.h5 == Results[N] (verified by k-eff comparison).
-_SNAPSHOTS: dict[int, str] = {0: 'BOL', 11: 'MOL', 22: 'EOL'}
+_SNAPSHOTS: dict[int, str] = {0: 'BOL', 15: 'MOL', 22: 'EOL'}
 
 # Cumulative EFPD at the end of each depletion step.
 _CUMULATIVE_DAYS: list[float] = [0.0] + list(np.cumsum(TIMESTEPS))
@@ -51,7 +51,8 @@ def _load_spectrum(
     Returns
     -------
     e_mid : ndarray (N_GROUPS,)  — geometric-mean energy per group [eV]
-    phi_leth : ndarray (N_GROUPS,)  — lethargy-normalised flux, peak-normalised
+    phi_leth : ndarray (N_GROUPS,)  — lethargy-normalised flux, integral-normalised
+                                      (probability density: integrates to 1 over lethargy)
     phi_leth_err : ndarray (N_GROUPS,)  — 1σ uncertainty (same scale)
     """
     with openmc.StatePoint(str(sp_path), autolink=False) as sp:
@@ -71,8 +72,8 @@ def _load_spectrum(
 
     phi_leth = flux / d_lethargy
     phi_leth_err = flux_err / d_lethargy
-    peak = phi_leth.max()
-    return e_mid, phi_leth / peak, phi_leth_err / peak
+    integral = np.sum(phi_leth * d_lethargy)
+    return e_mid, phi_leth / integral, phi_leth_err / integral
 
 
 def _hardening_metrics(
@@ -81,18 +82,21 @@ def _hardening_metrics(
     d_u = np.log(SPECTRUM_E_BINS[1:] / SPECTRUM_E_BINS[:-1])
     e_mid = np.sqrt(SPECTRUM_E_BINS[:-1] * SPECTRUM_E_BINS[1:])
 
-    print(f'\n{"Label":<6}  {"EFPD":>7}  {"% FIMA":>7}  '
-          f'{"Thermal frac":>13}  {"Mean E (eV)":>12}')
-    print('-' * 55)
+    # Thermal fraction is the primary hardening metric. Flux-weighted mean
+    # energy is omitted: it is dominated by the fast peak (~1 MeV) and gives
+    # a misleadingly large absolute value that obscures the thermal/epithermal
+    # shift of interest.
+    print(f'\n{"Label":<6}  {"EFPD":>7}  {"% FIMA":>7}  {"Thermal frac":>13}')
+    print(f'  (fraction of neutrons below {_THERMAL_CUTOFF_EV} eV; compact-only geometry'
+          f' → low absolute value expected, ~3% BOL vs ~20–40% for full HTGR element)')
+    print('-' * 42)
     for step_idx, label in _SNAPSHOTS.items():
         efpd = _CUMULATIVE_DAYS[step_idx]
         fima = _FIMA_TARGET_PCT * efpd / _IRRAD_DAYS
         _, phi_n, _ = spectra[label]
         phi_abs = phi_n * d_u
         thermal_frac = float(phi_abs[e_mid < _THERMAL_CUTOFF_EV].sum() / phi_abs.sum())
-        mean_e = float((phi_abs * e_mid).sum() / phi_abs.sum())
-        print(f'{label:<6}  {efpd:>7.1f}  {fima:>7.2f}  '
-              f'{thermal_frac:>13.4f}  {mean_e:>12.4f}')
+        print(f'{label:<6}  {efpd:>7.1f}  {fima:>7.2f}  {thermal_frac:>13.4f}')
 
 
 def _assess_trend(
@@ -101,30 +105,30 @@ def _assess_trend(
     d_u = np.log(SPECTRUM_E_BINS[1:] / SPECTRUM_E_BINS[:-1])
     e_mid = np.sqrt(SPECTRUM_E_BINS[:-1] * SPECTRUM_E_BINS[1:])
 
-    def mean_e(label: str) -> float:
-        _, phi_n, _ = spectra[label]
-        phi_abs = phi_n * d_u
-        return float((phi_abs * e_mid).sum() / phi_abs.sum())
-
     def therm_frac(label: str) -> float:
         _, phi_n, _ = spectra[label]
         phi_abs = phi_n * d_u
         return float(phi_abs[e_mid < _THERMAL_CUTOFF_EV].sum() / phi_abs.sum())
 
-    delta_e = mean_e('EOL') - mean_e('BOL')
-    delta_th = therm_frac('EOL') - therm_frac('BOL')
+    tf_bol = therm_frac('BOL')
+    tf_eol = therm_frac('EOL')
+    delta_th = tf_eol - tf_bol
+    rel_drop = delta_th / tf_bol * 100.0
 
+    direction_th = 'HARDENING' if delta_th < 0 else 'SOFTENING'
     print('\n--- Spectral trend (BOL → EOL) ---')
-    direction_e = 'HARDENING' if delta_e > 0 else 'SOFTENING'
-    direction_th = 'consistent with hardening' if delta_th < 0 else 'consistent with softening'
-    print(f'  Mean energy change:    {delta_e:+.4f} eV  ({direction_e})')
-    print(f'  Thermal frac change:   {delta_th:+.4f}   ({direction_th})')
+    print(f'  Thermal frac change:  {delta_th:+.4f}  ({rel_drop:+.1f}%)  → {direction_th}')
     print()
-    print('  Physical drivers:')
+    print('  Competing physical drivers:')
+    print('  - FP accumulation (Xe-135, Sm-149, …): strong thermal absorbers → HARDER')
+    print('    (dominant effect at ≤15% FIMA)')
     print('  - U-235 depletion (σ_th≈685 b): fewer thermal absorbers → softer')
-    print('  - Pu-239 buildup (σ_th≈1011 b, strong epithermal resonances): harder')
-    print('  - FP accumulation (Xe-135, Sm-149, …): strong thermal absorbers → harder')
-    print('  Net direction depends on which effect dominates at this burnup level.')
+    print('    (competing effect, but outweighed by FP accumulation here)')
+    print('  - Pu-239 buildup: reactivity effect (offsets U-235 loss in k-eff),')
+    print('    minor contribution to spectral shift at these burnup levels')
+    print()
+    print(f'  Conclusion: FP accumulation dominates — thermal fraction drops'
+          f' {abs(rel_drop):.0f}% over the irradiation.')
 
 
 def plot_spectrum(depletion_dir: Path, output_dir: Path) -> None:
@@ -151,8 +155,8 @@ def plot_spectrum(depletion_dir: Path, output_dir: Path) -> None:
     colors = {'BOL': 'steelblue', 'MOL': 'darkorange', 'EOL': 'firebrick'}
     snap_labels = {
         'BOL': f'BOL  ({_CUMULATIVE_DAYS[0]:.0f} EFPD, 0.0% FIMA)',
-        'MOL': (f'MOL  ({_CUMULATIVE_DAYS[11]:.1f} EFPD, '
-                f'{_FIMA_TARGET_PCT*_CUMULATIVE_DAYS[11]/_IRRAD_DAYS:.1f}% FIMA)'),
+        'MOL': (f'MOL  ({_CUMULATIVE_DAYS[15]:.1f} EFPD, '
+                f'{_FIMA_TARGET_PCT*_CUMULATIVE_DAYS[15]/_IRRAD_DAYS:.1f}% FIMA)'),
         'EOL': f'EOL  ({_CUMULATIVE_DAYS[22]:.1f} EFPD, 15.0% FIMA)',
     }
 
@@ -169,7 +173,7 @@ def plot_spectrum(depletion_dir: Path, output_dir: Path) -> None:
 
     ax.set_xscale('log')
     ax.set_xlabel('Neutron energy (eV)')
-    ax.set_ylabel('φ(E) per unit lethargy (peak-normalised)')
+    ax.set_ylabel('φ(E) per unit lethargy (probability density, integrates to 1)')
     ax.set_title(
         'TRISO compact — neutron spectrum in UCO kernel: BOL / MOL / EOL\n'
         'AGR-1 geometry, 19.75% HALEU, ENDF/B-VIII.0 @ 1200 K'

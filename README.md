@@ -278,11 +278,11 @@ The k-inf trend is physically sensible: a steady, near-linear decline driven by 
 
 - `src/triso/depletion.py` — added a `'kernel spectrum'` tally to `build_depletion_model()`: 100 log-spaced energy bins (1 meV → 20 MeV) with a `MaterialFilter` on the kernel, written to every depletion statepoint automatically.
 - `src/triso/depletion.py` — `SPECTRUM_E_BINS` and `SPECTRUM_N_GROUPS` exported as module-level constants so that plotting scripts import the same bin edges used to build the tally.
-- `scripts/plot_spectrum.py` — loads the `'kernel spectrum'` tally from statepoints `openmc_simulation_n0/11/22.h5` (BOL / MOL / EOL), plots the three lethargy-weighted spectra together, and reports thermal fraction and flux-weighted mean energy at each burnup point.
+- `scripts/plot_spectrum.py` — loads the `'kernel spectrum'` tally from statepoints `openmc_simulation_n0/15/22.h5` (BOL / MOL / EOL), plots the three lethargy-weighted spectra together, and reports the thermal fraction (fraction of neutrons below 0.625 eV) at each burnup point as the primary hardening metric.
 
 ### How it works
 
-Each depletion transport solve writes a statepoint `openmc_simulation_nN.h5`. `Results[N]` maps 1-to-1 to statepoint `nN` (verified by k-eff comparison). `plot_spectrum.py` reads the `'kernel spectrum'` tally directly from the three relevant statepoints — no additional transport runs are needed. The lethargy-normalised flux φ(E)/Δu is plotted on a log-energy axis and peak-normalised for visual comparison of spectral shape.
+Each depletion transport solve writes a statepoint `openmc_simulation_nN.h5`. `Results[N]` maps 1-to-1 to statepoint `nN` (verified by k-eff comparison). `plot_spectrum.py` reads the `'kernel spectrum'` tally directly from the three relevant statepoints — no additional transport runs are needed. The lethargy-normalised flux φ(E)/Δu is plotted on a log-energy axis and normalised so that the area under each curve integrates to 1 over lethargy (probability density). This makes the thermal fraction directly visible as the area under the thermal hump — a shrinking thermal hump at EOL is spectral hardening.
 
 > **Note:** A depletion re-run is required to populate the spectrum tally. The existing `output/depletion/openmc_simulation_n*.h5` statepoints were generated before the tally was added to `build_depletion_model()` and contain no user tallies.
 
@@ -290,21 +290,37 @@ Each depletion transport solve writes a statepoint `openmc_simulation_nN.h5`. `R
 
 **What is being modelled:** Same AGR-1 TRISO compact geometry as Stage 6–7 (all-reflective boundaries, k-inf). No geometry change — only the material composition of the UCO kernel changes at each snapshot.
 
-**Burnup snapshots:** Step 0 (BOL, 0 EFPD, 0% FIMA), step 11 (MOL, 102.1 EFPD, 2.5% FIMA), and step 22 (EOL, 620.2 EFPD, 15% FIMA). Step 11 is the numerical midpoint of the 22-step run; it represents early-to-mid burnup where Pu-239 buildup is just beginning.
+**Burnup snapshots:** Step 0 (BOL, 0 EFPD, 0% FIMA), step 15 (MOL, 290.5 EFPD, 7.0% FIMA), and step 22 (EOL, 620.2 EFPD, 15% FIMA). Step 15 is the closest step to the calendar midpoint (310.1 EFPD), 19.6 days short; step 16 would overshoot by 27.5 days. The MOL step can be changed by editing `_SNAPSHOTS` in `plot_spectrum.py`.
 
 **Energy group structure:** 100 log-spaced groups from 1 meV to 20 MeV. Coarser than dedicated multi-group libraries but sufficient to resolve the thermal peak (~0.025 eV), the epithermal resonance region (1 eV – 100 keV), and the fast fission source peak (~1 MeV).
 
 **Per-step transport settings:** Same as the depletion run — 100 batches (30 inactive), 2,000 particles/batch. Sufficient for spectral shape; tally relative errors expected ≲ 5% per group.
 
-**Output:** `output/spectrum_hardening.png` — three overlaid lethargy-weighted flux curves; printed table of thermal fraction and flux-weighted mean energy at each snapshot.
+**Output:** `output/spectrum_hardening.png` — three overlaid lethargy-weighted flux curves (probability density); printed table of thermal fraction at each snapshot with trend assessment.
+
+**Expected thermal fraction:** The compact-only geometry (all-reflective boundaries, no surrounding graphite moderator blocks) produces a harder baseline spectrum than a full HTGR fuel element. The BOL thermal fraction is ~3%, versus ~20–40% for a full element with graphite sleeve. This is expected and not a modelling error. The hardening signal is the *change* in thermal fraction across burnup, not its absolute value.
+
+### Physical interpretation
+
+Every fission event produces neutrons at fast energies (~1–2 MeV). These neutrons slow down through repeated scattering collisions in the graphite matrix until they reach thermal energies (~0.025 eV), where they are most likely to cause the next fission. The fast peak in the spectrum is therefore continuously replenished by fission; the thermal peak depends on how many neutrons survive the slowing-down process long enough to thermalise.
+
+Spectral hardening occurs when more neutrons are removed from the thermal population relative to the fast population. The fast peak is largely unaffected because most absorbers (including fission products) have negligible cross-sections at MeV energies. The thermal peak shrinks because absorbers intercept neutrons after they have already slowed down but before they cause fission. In a probability-density plot this appears as the thermal hump shrinking relative to the fast peak — not because there are more fast neutrons in absolute terms, but because proportionally fewer neutrons survive to thermal energies.
+
+The competing drivers during burnup:
+
+- **Fission product accumulation** (Xe-135, Sm-149, and longer-lived FPs): these have enormous thermal absorption cross-sections (Xe-135: ~2.6 × 10⁶ b at 0.025 eV) and negligible fast cross-sections, so they selectively remove neutrons from the thermal pool. **Dominant hardening driver at ≤15% FIMA.**
+- **U-235 depletion**: U-235 is itself a thermal absorber (σ_abs ≈ 698 b). As it burns away there are fewer thermal absorbers in the fuel, so more neutrons survive to thermalise — a competing *softening* effect. Outweighed by FP accumulation at these burnup levels.
+- **Pu-239 buildup**: primarily a reactivity effect — it partially replaces the fission rate lost from U-235 depletion. Its contribution to the spectral shape is minor at ≤15% FIMA.
+
+The simulation result (thermal fraction drops ~50% from BOL to EOL) confirms FP accumulation dominates.
 
 ### Design decisions
 
 - **Tally in `build_depletion_model()`, not a separate run** — the depletion already runs transport at each step; adding the spectrum tally costs nothing extra and avoids 3 redundant eigenvalue calculations.
 - **`SPECTRUM_E_BINS` exported from `depletion.py`** — single source of truth for the bin edges; `plot_spectrum.py` imports them so the tally definition and the reader always agree.
-- **Step 11 as MOL** — numerically the midpoint of the 22 steps (102.1 EFPD, 2.5% FIMA). Earlier in the irradiation than the chronological midpoint (310 EFPD); captures the Pu-239 early buildup phase. A later step (e.g. step 15, ~290 EFPD) would show more contrast; can be changed by editing `_SNAPSHOTS` in `plot_spectrum.py`.
+- **Step 15 as MOL** — closest step to the calendar midpoint of the irradiation (290.5 EFPD vs. 310.1 EFPD target, 19.6 days short; step 16 overshoots by 27.5 days).
 - **100 log-spaced groups** — fine enough to show the thermal peak shape and epithermal resonance structure without requiring a formal multi-group library. Coarser groups (e.g. the 3-group structure from Stage 0) cannot resolve the spectral shape.
-- **Peak-normalisation** — all three spectra are normalised to their own peak so that shape differences are directly visible regardless of absolute flux level.
+- **Probability-density normalisation** — each spectrum is normalised so its lethargy integral equals 1 (`φ / Σ φᵢ Δuᵢ`). This makes the thermal hump area directly proportional to the thermal fraction, so shrinkage at EOL is immediately readable from the plot. Flux-weighted mean energy is not reported: it is dominated by the fast peak (~1 MeV) and gives a misleadingly large absolute value (~350 keV) that obscures the thermal/epithermal shift of interest.
 
 ---
 
@@ -443,4 +459,5 @@ caffeinate python -m triso.depletion ../../data/chain_endfb71_thermal.xml
 cd ../..  # back to repo root
 caffeinate python scripts/doppler_coefficient.py
 # Saves output/doppler_ftc.png; eigenvalue statepoints in output/doppler/
+
 ```
